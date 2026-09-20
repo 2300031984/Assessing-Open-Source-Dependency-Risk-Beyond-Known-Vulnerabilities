@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 from datetime import datetime
+from typing import Any
 
 # Add project root to path for backend imports
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -18,6 +19,23 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Helper function to safely extract attributes or dict keys from Pydantic models, objects, or dicts
+def get_field(obj: Any, field_name: str, default: Any = None) -> Any:
+    """
+    Safely retrieve a field from a Pydantic model, object, or dictionary.
+    Supports both typed-object attribute access and dictionary key access.
+    Handles missing attributes, dictionary keys, and None values gracefully.
+    """
+    if obj is None:
+        return default
+    if hasattr(obj, field_name):
+        val = getattr(obj, field_name)
+    elif isinstance(obj, dict):
+        val = obj.get(field_name)
+    else:
+        val = None
+    return val if val is not None else default
 
 # Custom CSS for rich aesthetics
 st.markdown("""
@@ -170,9 +188,15 @@ if analyze_button or "current_analysis" in st.session_state:
 
     data = st.session_state["current_analysis"]
 
+    # Safely extract repository info
+    repo_info = get_field(data, "repository", {})
+    repo_owner = get_field(repo_info, "owner", "Unknown")
+    repo_name = get_field(repo_info, "name", "Unknown")
+    is_fixture = get_field(data, "is_demo_fixture", False)
+
     # Header Row with Mode Badge
-    mode_html = '<span class="mode-fixture">DEMO FIXTURE MODE</span>' if data.get("is_demo_fixture") else '<span class="mode-live">LIVE DATA MODE</span>'
-    st.markdown(f"### Results for `{data['repository']['owner']}/{data['repository']['name']}` &nbsp; {mode_html}", unsafe_allow_html=True)
+    mode_html = '<span class="mode-fixture">DEMO FIXTURE MODE</span>' if is_fixture else '<span class="mode-live">LIVE DATA MODE</span>'
+    st.markdown(f"### Results for `{repo_owner}/{repo_name}` &nbsp; {mode_html}", unsafe_allow_html=True)
     st.write("")
 
     # Tabbed View
@@ -190,8 +214,9 @@ if analyze_button or "current_analysis" in st.session_state:
         st.markdown("#### Composite Risk Score & Classification")
         c1, c2, c3 = st.columns([1, 1, 2])
         
-        score = data["risk_score"]
-        level = data["risk_level"]
+        score = get_field(data, "risk_score", 0.0)
+        level = get_field(data, "risk_level", "UNKNOWN")
+        explanation = get_field(data, "explanation", "No explanation available.")
 
         risk_class_map = {
             "LOW": "risk-low",
@@ -210,88 +235,116 @@ if analyze_button or "current_analysis" in st.session_state:
 
         with c3:
             st.markdown("**Key Recommendation Summary**")
-            st.info(data["explanation"])
+            st.info(explanation)
 
         st.markdown("---")
         st.markdown("#### Primary Signal Metrics")
         m1, m2, m3, m4, m5 = st.columns(5)
-        signals = data["repository"].get("signals") or {}
+        signals = get_field(repo_info, "signals", {})
         
-        m1.metric("Stars", f"{signals.get('stars', 0):,}")
-        m2.metric("Forks", f"{signals.get('forks', 0):,}")
-        m3.metric("Contributors", f"{signals.get('contributor_count', 0)}")
-        m4.metric("Release Age", f"{signals.get('release_age_days', 'N/A')} days")
-        m5.metric("Known Vulns", f"{len(data.get('vulnerabilities', []))}")
+        stars = get_field(signals, "stars", 0)
+        forks = get_field(signals, "forks", 0)
+        contribs = get_field(signals, "contributor_count", 0)
+        release_age = get_field(signals, "release_age_days")
+        vulns = get_field(data, "vulnerabilities", [])
+
+        m1.metric("Stars", f"{stars:,}" if isinstance(stars, int) else str(stars))
+        m2.metric("Forks", f"{forks:,}" if isinstance(forks, int) else str(forks))
+        m3.metric("Contributors", f"{contribs}")
+        m4.metric("Release Age", f"{release_age} days" if release_age is not None else "N/A")
+        m5.metric("Known Vulns", f"{len(vulns) if isinstance(vulns, list) else 0}")
 
     # TAB 2: REPOSITORY OVERVIEW
     with tab2:
         st.markdown("#### Repository Identity & Activity Signals")
-        repo_info = data["repository"]
         
         col_a, col_b = st.columns(2)
         with col_a:
-            st.write(f"**Repository Name:** `{repo_info['name']}`")
-            st.write(f"**Owner:** `{repo_info['owner']}`")
-            st.write(f"**URL:** [{repo_info['url']}]({repo_info['url']})")
-            st.write(f"**Primary Language:** `{repo_info.get('language') or 'Unknown'}`")
-            st.write(f"**License:** `{repo_info.get('license') or 'Unlicensed / Unknown'}`")
-            st.write(f"**Archived Status:** `{'Yes (Unmaintained)' if repo_info.get('archived') else 'No (Active)'}`")
+            repo_url = get_field(repo_info, "url", "#")
+            st.write(f"**Repository Name:** `{repo_name}`")
+            st.write(f"**Owner:** `{repo_owner}`")
+            st.write(f"**URL:** [{repo_url}]({repo_url})")
+            st.write(f"**Primary Language:** `{get_field(repo_info, 'language', 'Unknown')}`")
+            st.write(f"**License:** `{get_field(repo_info, 'license', 'Unlicensed / Unknown')}`")
+            st.write(f"**Archived Status:** `{'Yes (Unmaintained)' if get_field(repo_info, 'archived', False) else 'No (Active)'}`")
 
         with col_b:
-            sig = repo_info.get("signals") or {}
-            st.write(f"**Open Issues:** `{sig.get('open_issues', 0)}`")
-            st.write(f"**Monthly Commit Frequency:** `{sig.get('commit_frequency_per_month', 0.0)} commits/mo`")
-            st.write(f"**Top Contributor Concentration:** `{sig.get('top_contributor_commit_ratio', 0.0) * 100:.1f}%`")
-            st.write(f"**Latest Release Tag:** `{sig.get('latest_release_tag') or 'None'}`")
-            st.write(f"**Missing Signals Logged:** `{sig.get('missing_fields') or 'None'}`")
+            sig = get_field(repo_info, "signals", {})
+            st.write(f"**Open Issues:** `{get_field(sig, 'open_issues', 0)}`")
+            st.write(f"**Monthly Commit Frequency:** `{get_field(sig, 'commit_frequency_per_month', 0.0)} commits/mo`")
+            top_ratio = get_field(sig, "top_contributor_commit_ratio", 0.0)
+            st.write(f"**Top Contributor Concentration:** `{top_ratio * 100:.1f}%`")
+            st.write(f"**Latest Release Tag:** `{get_field(sig, 'latest_release_tag', 'None')}`")
+            st.write(f"**Missing Signals Logged:** `{get_field(sig, 'missing_fields', 'None')}`")
 
     # TAB 3: KNOWN VULNERABILITY SIGNALS
     with tab3:
         st.markdown("#### Known Vulnerability Signals (OSV Intelligence)")
-        vulns = data.get("vulnerabilities", [])
+        vulns_list = get_field(data, "vulnerabilities", [])
         
-        if not vulns:
+        if not vulns_list:
             st.success("No public known vulnerability signals reported for this package.")
         else:
-            st.warning(f"Associated with {len(vulns)} known vulnerability signals.")
-            for v in vulns:
-                with st.expander(f"🔴 {v['vuln_id']} — Severity: {v['severity']} (CVSS {v['cvss_score']})"):
-                    st.write(f"**Summary:** {v['summary']}")
-                    st.write(f"**Affected Versions:** `{v['affected_versions']}`")
-                    st.write(f"**Fixed Versions:** `{v['fixed_versions']}`")
-                    st.write(f"**Intelligence Source:** `{v['source']}`")
+            st.warning(f"Associated with {len(vulns_list)} known vulnerability signals.")
+            for v in vulns_list:
+                v_id = get_field(v, "vuln_id", "UNKNOWN-VULN")
+                v_sev = get_field(v, "severity", "UNKNOWN")
+                v_cvss = get_field(v, "cvss_score", 0.0)
+                v_summary = get_field(v, "summary", "No summary provided.")
+                v_affected = get_field(v, "affected_versions", "N/A")
+                v_fixed = get_field(v, "fixed_versions", "N/A")
+                v_source = get_field(v, "source", "OSV")
+
+                with st.expander(f"🔴 {v_id} — Severity: {v_sev} (CVSS {v_cvss})"):
+                    st.write(f"**Summary:** {v_summary}")
+                    st.write(f"**Affected Versions:** `{v_affected}`")
+                    st.write(f"**Fixed Versions:** `{v_fixed}`")
+                    st.write(f"**Intelligence Source:** `{v_source}`")
 
     # TAB 4: RISK FACTORS & SCORING BREAKDOWN
     with tab4:
         st.markdown("#### Transparent Factor-by-Factor Risk Breakdown")
         st.caption("Composite Score = Sum of (Normalized Risk Factor × Assigned Weight)")
 
-        factors = data.get("risk_factors", {})
+        factors = get_field(data, "risk_factors", {})
         
-        # Prepare Data Table
+        # Prepare Data Table safely supporting both model objects and dicts
         table_rows = []
-        for factor_name, f_data in factors.items():
+        factors_items = factors.items() if hasattr(factors, "items") else []
+
+        for factor_name, f_data in factors_items:
+            raw_val = get_field(f_data, "raw_value", 0.0)
+            norm_val = get_field(f_data, "normalized_value", 0.0)
+            weight_val = get_field(f_data, "weight", 0.0)
+            contrib_val = get_field(f_data, "weighted_contribution", 0.0)
+
             table_rows.append({
-                "Risk Dimension": factor_name.replace("_", " ").title(),
-                "Raw Signal": f_data["raw_value"],
-                "Normalized Risk (0-1)": f_data["normalized_value"],
-                "Assigned Weight": f_data["weight"],
-                "Weighted Contribution": f_data["weighted_contribution"]
+                "Risk Dimension": str(factor_name).replace("_", " ").title(),
+                "Raw Signal": round(float(raw_val), 4) if isinstance(raw_val, (int, float)) else raw_val,
+                "Normalized Risk (0-1)": round(float(norm_val), 4) if isinstance(norm_val, (int, float)) else norm_val,
+                "Assigned Weight": round(float(weight_val), 4) if isinstance(weight_val, (int, float)) else weight_val,
+                "Weighted Contribution": round(float(contrib_val), 4) if isinstance(contrib_val, (int, float)) else contrib_val
             })
         
         st.dataframe(table_rows, use_container_width=True)
 
         # Progress bar breakdown per factor
         st.markdown("#### Individual Factor Risk Contributions")
-        for factor_name, f_data in factors.items():
-            norm_val = f_data["normalized_value"]
-            st.write(f"**{factor_name.replace('_', ' ').title()} Risk** (Weight: {f_data['weight']:.2f})")
-            st.progress(norm_val)
+        for factor_name, f_data in factors_items:
+            norm_val = get_field(f_data, "normalized_value", 0.0)
+            weight_val = get_field(f_data, "weight", 0.0)
+            
+            norm_float = float(norm_val) if isinstance(norm_val, (int, float)) else 0.0
+            norm_float = min(1.0, max(0.0, norm_float))
+            weight_float = float(weight_val) if isinstance(weight_val, (int, float)) else 0.0
+
+            st.write(f"**{str(factor_name).replace('_', ' ').title()} Risk** (Weight: {weight_float:.2f})")
+            st.progress(norm_float)
 
     # TAB 5: EXPLANATION
     with tab5:
         st.markdown("#### Explainable Risk Diagnosis")
-        st.info(data["explanation"])
+        st.info(get_field(data, "explanation", "No explanation available."))
         
         st.markdown("""
         **Scoring Transparency Rationale:**
@@ -303,13 +356,22 @@ if analyze_button or "current_analysis" in st.session_state:
     # TAB 6: AUDIT & REPRODUCIBILITY
     with tab6:
         st.markdown("#### Analysis Audit Trail & Reproducibility Record")
+        analysis_id = get_field(data, "analysis_id", "N/A")
+        scoring_ver = get_field(data, "scoring_version", "v0.1")
+        feature_ver = get_field(data, "feature_version", "v0.1")
+        ts = get_field(data, "timestamp", "N/A")
+        fixture_flag = get_field(data, "is_demo_fixture", False)
+        repo_url_val = get_field(repo_info, "url", "N/A")
+        final_score = get_field(data, "risk_score", 0.0)
+        final_level = get_field(data, "risk_level", "UNKNOWN")
+
         st.code(f"""
-Analysis ID:        {data['analysis_id']}
-Scoring Version:    {data['scoring_version']}
-Feature Version:    {data['feature_version']}
-Execution Timestamp:{data['timestamp']}
-Is Demo Fixture:   {data['is_demo_fixture']}
-Repository URL:     {data['repository']['url']}
-Composite Score:    {data['risk_score']}
-Risk Level:         {data['risk_level']}
+Analysis ID:        {analysis_id}
+Scoring Version:    {scoring_ver}
+Feature Version:    {feature_ver}
+Execution Timestamp:{ts}
+Is Demo Fixture:   {fixture_flag}
+Repository URL:     {repo_url_val}
+Composite Score:    {final_score}
+Risk Level:         {final_level}
         """, language="yaml")
