@@ -1,0 +1,14 @@
+{
+  "expected_composite_score": 0.4932,
+  "expected_risk_level": "MODERATE",
+  "scoring_version": "v0.1",
+  "feature_version": "v0.1",
+  "weights": {
+    "vulnerability": 0.30,
+    "repository_health": 0.20,
+    "activity": 0.15,
+    "maintainer": 0.15,
+    "release": 0.10,
+    "dependency": 0.10
+  }
+}

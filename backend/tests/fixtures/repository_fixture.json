@@ -1,0 +1,27 @@
+{
+  "owner": "demo-owner",
+  "name": "sample-crypto-lib",
+  "url": "https://github.com/demo-owner/sample-crypto-lib",
+  "description": "Demonstration repository fixture for CP1 Review-2 faculty live demo",
+  "language": "Python",
+  "license": "MIT",
+  "created_at_repo": "2022-01-15T10:00:00Z",
+  "updated_at_repo": "2024-06-20T14:30:00Z",
+  "archived": false,
+  "signals": {
+    "stars": 1250,
+    "forks": 320,
+    "watchers": 85,
+    "open_issues": 42,
+    "recent_commits": 12,
+    "commit_frequency_per_month": 4.5,
+    "contributor_count": 3,
+    "top_contributor_commit_ratio": 0.82,
+    "latest_release_tag": "v1.4.0",
+    "latest_release_date": "2023-11-10T12:00:00Z",
+    "release_age_days": 315,
+    "release_frequency_per_year": 2.0,
+    "missing_fields": [],
+    "collected_at": "2026-09-20T22:00:00Z"
+  }
+}
