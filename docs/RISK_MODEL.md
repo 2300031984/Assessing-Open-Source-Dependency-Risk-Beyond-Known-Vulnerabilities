@@ -81,3 +81,7 @@ To guarantee that any analysis can be independently verified and audited:
 1. **GitHub API Scope**: Phase 1 signal collection focuses on GitHub repositories.
 2. **Ecosystem Name Resolution**: Package name is derived from repo name; detailed multi-language lockfile parsing (e.g. `Cargo.lock`, `go.sum`) is scheduled for CP2.
 3. **No Unvalidated ML Claims**: Machine learning predictive calibration (Objectives O3 & O4) is explicitly reserved for CP2 validation.
+
+
+## Interpretation
+The score is an explainable engineering baseline and should be validated against project-specific evidence before being treated as a predictive measure.
