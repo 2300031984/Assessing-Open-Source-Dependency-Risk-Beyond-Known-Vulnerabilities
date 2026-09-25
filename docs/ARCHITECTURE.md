@@ -28,3 +28,7 @@ CYBER-100 is a transparent and reproducible dependency-risk assessment prototype
 
 ## CP1 Boundary
 The current milestone targets O1 and O2. Historical validation, comparative evaluation, deeper lockfile parsing, and operational impact assessment are planned for later phases.
+
+
+## Verification
+The architecture is designed so collection, feature extraction, scoring, persistence, and presentation remain separately testable components.
