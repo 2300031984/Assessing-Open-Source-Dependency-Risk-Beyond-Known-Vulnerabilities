@@ -17,5 +17,15 @@ class Settings:
     DEMO_MODE: bool = os.getenv("DEMO_MODE", "False").lower() == "true"
     DEFAULT_SCORING_VERSION: str = os.getenv("DEFAULT_SCORING_VERSION", "v0.1")
     DEFAULT_FEATURE_VERSION: str = os.getenv("DEFAULT_FEATURE_VERSION", "v0.1")
+    API_TIMEOUT_SECONDS: int = int(os.getenv("API_TIMEOUT_SECONDS", "10"))
+    ALLOWED_ORIGINS: list[str] = [
+        origin.strip()
+        for origin in os.getenv(
+            "ALLOWED_ORIGINS",
+            "http://localhost:8501,http://127.0.0.1:8501,http://localhost:3000,http://localhost:8000,http://localhost:8001"
+        ).split(",")
+        if origin.strip()
+    ]
 
 settings = Settings()
+

@@ -39,8 +39,25 @@ class AnalysisService:
         else:
             logger.info(f"Using LIVE API mode to collect signals for: {repository_url}")
             repo_data = self.github_collector.collect(repository_url)
-            # Query OSV for vulnerability signals using repo name
-            vulns_data = self.osv_collector.collect(repo_data["name"])
+            # Map detected repository language to OSV package ecosystem
+            detected_lang = repo_data.get("language")
+            ecosystem = self.osv_collector.map_language_to_ecosystem(detected_lang)
+            vulns_data = self.osv_collector.collect(repo_data["name"], ecosystem=ecosystem)
+
+        # Generate contextual warnings for missing or degraded data
+        warnings: List[str] = []
+        sig = repo_data.get("signals") or {}
+        missing_fields = sig.get("missing_fields") or []
+        if "rate_limit_exceeded" in missing_fields:
+            warnings.append("GitHub API rate limit exceeded during collection. Repository signals may be incomplete.")
+        if "api_failure" in missing_fields:
+            warnings.append("GitHub API returned an error during signal collection. Some signals defaulted to conservative fallbacks.")
+        if "network_error" in missing_fields:
+            warnings.append("Network connectivity issue occurred while communicating with external intelligence sources.")
+        if not repo_data.get("license"):
+            warnings.append("Repository lacks an explicit SPDX license. Potential legal and governance risk.")
+        if repo_data.get("archived"):
+            warnings.append("Repository is archived and unmaintained by upstream owners.")
 
         # Execute scoring engine
         assessment_result = self.scoring_engine.calculate_risk(repo_data, vulns_data)
@@ -73,8 +90,10 @@ class AnalysisService:
             "scoring_version": assessment_result["scoring_version"],
             "feature_version": assessment_result["feature_version"],
             "is_demo_fixture": is_demo,
+            "warnings": warnings,
             "timestamp": assessment_result["timestamp"]
         }
+
 
     def get_analysis_by_id(self, analysis_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve stored analysis record by unique Analysis ID."""
@@ -96,8 +115,13 @@ class AnalysisService:
                 "weighted_contribution": f.weighted_contribution
             }
 
-        vulns_list = [
-            {
+        seen_vulns = set()
+        vulns_list = []
+        for v in (repo.vulnerabilities or []):
+            if v.vuln_id in seen_vulns:
+                continue
+            seen_vulns.add(v.vuln_id)
+            vulns_list.append({
                 "vuln_id": v.vuln_id,
                 "severity": v.severity,
                 "cvss_score": v.cvss_score,
@@ -106,9 +130,22 @@ class AnalysisService:
                 "fixed_versions": v.fixed_versions,
                 "published_date": v.published_date.isoformat() if v.published_date else None,
                 "source": v.source
-            }
-            for v in repo.vulnerabilities
-        ]
+            })
+        # Reconstruct warnings
+
+        warnings = []
+        if signals and signals.missing_fields_json:
+            mf = signals.missing_fields_json
+            if "rate_limit_exceeded" in mf:
+                warnings.append("GitHub API rate limit exceeded during collection. Repository signals may be incomplete.")
+            if "api_failure" in mf:
+                warnings.append("GitHub API returned an error during signal collection. Some signals defaulted to conservative fallbacks.")
+            if "network_error" in mf:
+                warnings.append("Network connectivity issue occurred while communicating with external intelligence sources.")
+        if not repo.license:
+            warnings.append("Repository lacks an explicit SPDX license. Potential legal and governance risk.")
+        if repo.archived:
+            warnings.append("Repository is archived and unmaintained by upstream owners.")
 
         return {
             "analysis_id": assessment.analysis_id,
@@ -144,6 +181,7 @@ class AnalysisService:
             "scoring_version": assessment.scoring_version,
             "feature_version": assessment.feature_version,
             "is_demo_fixture": assessment.is_demo_fixture,
+            "warnings": warnings,
             "timestamp": assessment.created_at
         }
 
@@ -154,84 +192,97 @@ class AnalysisService:
         assessment_result: Dict[str, Any],
         is_demo: bool
     ) -> Tuple[Repository, RiskAssessment]:
-        """Save analysis records into SQLAlchemy database."""
-        # 1. Get or create Repository entity
-        repo = self.db.query(Repository).filter(Repository.url == repo_data["url"]).first()
-        if not repo:
-            repo = Repository(
-                owner=repo_data["owner"],
-                name=repo_data["name"],
-                url=repo_data["url"],
-                description=repo_data.get("description"),
-                language=repo_data.get("language"),
-                license=repo_data.get("license"),
-                archived=repo_data.get("archived", False)
+        """Save analysis records into SQLAlchemy database with rollback protection."""
+        try:
+            # 1. Get or create Repository entity
+            repo = self.db.query(Repository).filter(Repository.url == repo_data["url"]).first()
+            if not repo:
+                repo = Repository(
+                    owner=repo_data["owner"],
+                    name=repo_data["name"],
+                    url=repo_data["url"],
+                    description=repo_data.get("description"),
+                    language=repo_data.get("language"),
+                    license=repo_data.get("license"),
+                    archived=repo_data.get("archived", False)
+                )
+                self.db.add(repo)
+                self.db.flush()
+
+            # 2. Add Signal Snapshot
+            sig = repo_data.get("signals", {})
+            signal_record = RepositorySignal(
+                repository_id=repo.id,
+                stars=sig.get("stars", 0),
+                forks=sig.get("forks", 0),
+                watchers=sig.get("watchers", 0),
+                open_issues=sig.get("open_issues", 0),
+                recent_commits=sig.get("recent_commits", 0),
+                commit_frequency_per_month=sig.get("commit_frequency_per_month", 0.0),
+                contributor_count=sig.get("contributor_count", 0),
+                top_contributor_commit_ratio=sig.get("top_contributor_commit_ratio", 0.0),
+                latest_release_tag=sig.get("latest_release_tag"),
+                release_age_days=sig.get("release_age_days"),
+                release_frequency_per_year=sig.get("release_frequency_per_year", 0.0),
+                missing_fields_json=sig.get("missing_fields", [])
             )
-            self.db.add(repo)
+            self.db.add(signal_record)
+
+            # 3. Add Vulnerability Snapshots (avoid duplicate entries for same repo)
+            existing_vulns = {
+                val[0] for val in self.db.query(Vulnerability.vuln_id).filter(Vulnerability.repository_id == repo.id).all()
+            }
+            for v in vulns_data:
+                v_id = v.get("vuln_id", "UNKNOWN")
+                if v_id in existing_vulns:
+                    continue
+                existing_vulns.add(v_id)
+                vuln_record = Vulnerability(
+                    repository_id=repo.id,
+                    vuln_id=v_id,
+                    severity=v.get("severity"),
+                    cvss_score=v.get("cvss_score"),
+                    summary=v.get("summary"),
+                    affected_versions=v.get("affected_versions"),
+                    fixed_versions=v.get("fixed_versions"),
+                    source=v.get("source", "OSV")
+                )
+                self.db.add(vuln_record)
+
+            # 4. Add Risk Assessment record
+            assessment = RiskAssessment(
+                analysis_id=assessment_result["analysis_id"],
+                repository_id=repo.id,
+                composite_score=assessment_result["composite_score"],
+                risk_level=assessment_result["risk_level"],
+                explanation_summary=assessment_result["explanation"],
+                scoring_version=assessment_result["scoring_version"],
+                feature_version=assessment_result["feature_version"],
+                is_demo_fixture=is_demo
+            )
+            self.db.add(assessment)
             self.db.flush()
 
-        # 2. Add Signal Snapshot
-        sig = repo_data.get("signals", {})
-        signal_record = RepositorySignal(
-            repository_id=repo.id,
-            stars=sig.get("stars", 0),
-            forks=sig.get("forks", 0),
-            watchers=sig.get("watchers", 0),
-            open_issues=sig.get("open_issues", 0),
-            recent_commits=sig.get("recent_commits", 0),
-            commit_frequency_per_month=sig.get("commit_frequency_per_month", 0.0),
-            contributor_count=sig.get("contributor_count", 0),
-            top_contributor_commit_ratio=sig.get("top_contributor_commit_ratio", 0.0),
-            latest_release_tag=sig.get("latest_release_tag"),
-            release_age_days=sig.get("release_age_days"),
-            release_frequency_per_year=sig.get("release_frequency_per_year", 0.0),
-            missing_fields_json=sig.get("missing_fields", [])
-        )
-        self.db.add(signal_record)
+            # 5. Add Risk Features breakdown
+            for f_name, f_breakdown in assessment_result["risk_factors"].items():
+                rf = RiskFeature(
+                    assessment_id=assessment.id,
+                    factor_name=f_name,
+                    raw_value=f_breakdown.raw_value,
+                    normalized_value=f_breakdown.normalized_value,
+                    weight=f_breakdown.weight,
+                    weighted_contribution=f_breakdown.weighted_contribution
+                )
+                self.db.add(rf)
 
-        # 3. Add Vulnerability Snapshots
-        for v in vulns_data:
-            vuln_record = Vulnerability(
-                repository_id=repo.id,
-                vuln_id=v.get("vuln_id", "UNKNOWN"),
-                severity=v.get("severity"),
-                cvss_score=v.get("cvss_score"),
-                summary=v.get("summary"),
-                affected_versions=v.get("affected_versions"),
-                fixed_versions=v.get("fixed_versions"),
-                source=v.get("source", "OSV")
-            )
-            self.db.add(vuln_record)
+            self.db.commit()
+            self.db.refresh(assessment)
+            return repo, assessment
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Database error during persistence: {e}")
+            raise
 
-        # 4. Add Risk Assessment record
-        assessment = RiskAssessment(
-            analysis_id=assessment_result["analysis_id"],
-            repository_id=repo.id,
-            composite_score=assessment_result["composite_score"],
-            risk_level=assessment_result["risk_level"],
-            explanation_summary=assessment_result["explanation"],
-            scoring_version=assessment_result["scoring_version"],
-            feature_version=assessment_result["feature_version"],
-            is_demo_fixture=is_demo
-        )
-        self.db.add(assessment)
-        self.db.flush()
-
-        # 5. Add Risk Features breakdown
-        for f_name, f_breakdown in assessment_result["risk_factors"].items():
-            rf = RiskFeature(
-                assessment_id=assessment.id,
-                factor_name=f_name,
-                raw_value=f_breakdown.raw_value,
-                normalized_value=f_breakdown.normalized_value,
-                weight=f_breakdown.weight,
-                weighted_contribution=f_breakdown.weighted_contribution
-            )
-            self.db.add(rf)
-
-        self.db.commit()
-        self.db.refresh(assessment)
-        return repo, assessment
 
     @staticmethod
     def _load_fixtures() -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:

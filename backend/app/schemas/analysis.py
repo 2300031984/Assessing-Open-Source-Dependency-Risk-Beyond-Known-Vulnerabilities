@@ -24,5 +24,7 @@ class AnalysisResponse(BaseModel):
     scoring_version: str
     feature_version: str
     is_demo_fixture: bool = False
+    warnings: List[str] = []
     timestamp: datetime
+
 

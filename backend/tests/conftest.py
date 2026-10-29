@@ -4,8 +4,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 
+from sqlalchemy.pool import StaticPool
 from backend.app.database.base import Base
 from backend.app.database.session import get_db
+from backend.app.api.deps import get_database
 from backend.app.main import app
 
 # In-memory SQLite for testing
@@ -15,11 +17,13 @@ TEST_SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 def db_session():
     engine = create_engine(
         TEST_SQLALCHEMY_DATABASE_URL,
-        connect_args={"check_same_thread": False}
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool
     )
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
     session = TestingSessionLocal()
+
     try:
         yield session
     finally:
@@ -35,6 +39,8 @@ def client(db_session):
             pass
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_database] = override_get_db
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+

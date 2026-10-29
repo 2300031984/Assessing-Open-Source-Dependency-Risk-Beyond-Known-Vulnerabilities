@@ -173,18 +173,19 @@ with col2:
 if analyze_button or "current_analysis" in st.session_state:
     if analyze_button:
         with st.spinner("Collecting signals, extracting features, and computing composite risk score..."):
+            db = SessionLocal()
             try:
-                db = SessionLocal()
                 service = AnalysisService(db)
                 result = service.analyze_repository(
                     repository_url=repo_url_input.strip(),
                     use_demo_fixture=use_fixture
                 )
-                db.close()
                 st.session_state["current_analysis"] = result
             except Exception as e:
                 st.error(f"Analysis failed: {str(e)}")
                 st.stop()
+            finally:
+                db.close()
 
     data = st.session_state["current_analysis"]
 
@@ -198,6 +199,13 @@ if analyze_button or "current_analysis" in st.session_state:
     mode_html = '<span class="mode-fixture">DEMO FIXTURE MODE</span>' if is_fixture else '<span class="mode-live">LIVE DATA MODE</span>'
     st.markdown(f"### Results for `{repo_owner}/{repo_name}` &nbsp; {mode_html}", unsafe_allow_html=True)
     st.write("")
+
+    # Display Warning Banner if data quality or API issues were flagged
+    warnings_list = get_field(data, "warnings", [])
+    if warnings_list:
+        with st.expander("⚠️ Data Quality & Signal Collection Notices", expanded=True):
+            for w in warnings_list:
+                st.warning(f"• {w}")
 
     # Tabbed View
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -248,11 +256,17 @@ if analyze_button or "current_analysis" in st.session_state:
         release_age = get_field(signals, "release_age_days")
         vulns = get_field(data, "vulnerabilities", [])
 
-        m1.metric("Stars", f"{stars:,}" if isinstance(stars, int) else str(stars))
-        m2.metric("Forks", f"{forks:,}" if isinstance(forks, int) else str(forks))
-        m3.metric("Contributors", f"{contribs}")
-        m4.metric("Release Age", f"{release_age} days" if release_age is not None else "N/A")
-        m5.metric("Known Vulns", f"{len(vulns) if isinstance(vulns, list) else 0}")
+        stars_str = f"{stars:,}" if isinstance(stars, int) else str(stars or 0)
+        forks_str = f"{forks:,}" if isinstance(forks, int) else str(forks or 0)
+        contribs_str = str(contribs or 0)
+        release_str = f"{release_age} days" if release_age is not None else "N/A"
+        vuln_count = len(vulns) if isinstance(vulns, list) else 0
+
+        m1.metric("Stars", stars_str)
+        m2.metric("Forks", forks_str)
+        m3.metric("Contributors", contribs_str)
+        m4.metric("Release Age", release_str)
+        m5.metric("Known Vulns", f"{vuln_count}")
 
     # TAB 2: REPOSITORY OVERVIEW
     with tab2:
@@ -273,19 +287,21 @@ if analyze_button or "current_analysis" in st.session_state:
             st.write(f"**Open Issues:** `{get_field(sig, 'open_issues', 0)}`")
             st.write(f"**Monthly Commit Frequency:** `{get_field(sig, 'commit_frequency_per_month', 0.0)} commits/mo`")
             top_ratio = get_field(sig, "top_contributor_commit_ratio", 0.0)
-            st.write(f"**Top Contributor Concentration:** `{top_ratio * 100:.1f}%`")
+            safe_ratio = float(top_ratio) if isinstance(top_ratio, (int, float)) else 0.0
+            st.write(f"**Top Contributor Concentration:** `{safe_ratio * 100:.1f}%`")
             st.write(f"**Latest Release Tag:** `{get_field(sig, 'latest_release_tag', 'None')}`")
             st.write(f"**Missing Signals Logged:** `{get_field(sig, 'missing_fields', 'None')}`")
 
     # TAB 3: KNOWN VULNERABILITY SIGNALS
     with tab3:
         st.markdown("#### Known Vulnerability Signals (OSV Intelligence)")
+        st.caption("Confirmed historical vulnerability records queried directly from the Open Source Vulnerabilities (OSV) database.")
         vulns_list = get_field(data, "vulnerabilities", [])
         
         if not vulns_list:
-            st.success("No public known vulnerability signals reported for this package.")
+            st.success("✅ No public known vulnerability signals reported for this package.")
         else:
-            st.warning(f"Associated with {len(vulns_list)} known vulnerability signals.")
+            st.warning(f"⚠️ Associated with {len(vulns_list)} known vulnerability signals.")
             for v in vulns_list:
                 v_id = get_field(v, "vuln_id", "UNKNOWN-VULN")
                 v_sev = get_field(v, "severity", "UNKNOWN")
@@ -349,6 +365,7 @@ if analyze_button or "current_analysis" in st.session_state:
         st.markdown("""
         **Scoring Transparency Rationale:**
         - **No Black-Box Metrics**: Every component of the composite risk score is derived directly from inspectable repository activity signals and public vulnerability intelligence.
+        - **Confirmed vs Heuristic Distinction**: Public CVEs/OSV records are treated as confirmed historical security issues, whereas repository health, activity recency, and maintainer concentration are heuristic indicators of latent supply chain risk.
         - **Configurable Weights**: Prototype weights are maintained in configuration and can be tuned during experimentation.
         - **Non-Sensationalist Language**: Results reflect "Known Vulnerability Signals" and repository activity risks rather than absolute security claims.
         """)
@@ -375,3 +392,54 @@ Repository URL:     {repo_url_val}
 Composite Score:    {final_score}
 Risk Level:         {final_level}
         """, language="yaml")
+
+else:
+    # Initial state when no analysis has been run yet
+    st.markdown("""
+    <div style="background-color: #161B26; border: 1px solid #232D42; border-radius: 10px; padding: 24px; margin-top: 16px;">
+        <h4 style="color: #4CC9F0; margin-top: 0;">👋 Ready to Analyze Open-Source Dependency Risk</h4>
+        <p style="color: #94A3B8;">
+            CYBER-100 assesses supply-chain risk beyond known CVE vulnerabilities by evaluating repository health,
+            bus-factor maintainer concentration, commit cadence, and release governance.
+        </p>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 16px;">
+            <div style="background: #0E1117; padding: 12px; border-radius: 6px; border: 1px solid #2A3654;">
+                <strong style="color: #F8FAFC;">1. Known Vulnerabilities</strong><br/>
+                <span style="font-size: 12px; color: #94A3B8;">OSV database query for package CVSS severity.</span>
+            </div>
+            <div style="background: #0E1117; padding: 12px; border-radius: 6px; border: 1px solid #2A3654;">
+                <strong style="color: #F8FAFC;">2. Repository Health</strong><br/>
+                <span style="font-size: 12px; color: #94A3B8;">Issues-to-popularity ratio, archived state, signals.</span>
+            </div>
+            <div style="background: #0E1117; padding: 12px; border-radius: 6px; border: 1px solid #2A3654;">
+                <strong style="color: #F8FAFC;">3. Commit Activity</strong><br/>
+                <span style="font-size: 12px; color: #94A3B8;">Recent commit cadence and monthly maintenance.</span>
+            </div>
+            <div style="background: #0E1117; padding: 12px; border-radius: 6px; border: 1px solid #2A3654;">
+                <strong style="color: #F8FAFC;">4. Maintainer Concentration</strong><br/>
+                <span style="font-size: 12px; color: #94A3B8;">Bus factor and top-contributor commit dominance.</span>
+            </div>
+            <div style="background: #0E1117; padding: 12px; border-radius: 6px; border: 1px solid #2A3654;">
+                <strong style="color: #F8FAFC;">5. Release Recency</strong><br/>
+                <span style="font-size: 12px; color: #94A3B8;">Days elapsed since the latest release or tag.</span>
+            </div>
+            <div style="background: #0E1117; padding: 12px; border-radius: 6px; border: 1px solid #2A3654;">
+                <strong style="color: #F8FAFC;">6. License & Governance</strong><br/>
+                <span style="font-size: 12px; color: #94A3B8;">SPDX license clarity, copyleft, and archive risk.</span>
+            </div>
+        </div>
+        <p style="color: #64748B; font-size: 13px; margin-top: 16px; margin-bottom: 0;">
+            💡 <em>Select <strong>DEMO FIXTURE</strong> in the sidebar to run an immediate offline demonstration with zero network dependencies, or <strong>LIVE DATA</strong> to query GitHub and OSV APIs in real time.</em>
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Footer Limitation Notice
+st.markdown("---")
+st.markdown("""
+<div style="text-align: center; color: #64748B; font-size: 12px;">
+    ⚠️ <strong>Research & Academic Disclaimer:</strong> The CYBER-100 composite risk score is an indicative heuristic prototype designed for preliminary supply-chain evaluation.
+    It synthesizes public metadata and OSV vulnerability signals, but does not guarantee the absence of zero-day vulnerabilities or replace rigorous manual code review.
+</div>
+""", unsafe_allow_html=True)
+

@@ -35,15 +35,24 @@ def analyze_repository(
         )
         return result
     except ValueError as ve:
+        err_msg = str(ve)
+        if "not found" in err_msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=err_msg
+            )
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(ve)
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=err_msg
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected error occurred during risk assessment: {str(e)}"
+            detail="An internal error occurred during risk assessment. Please check system logs or use demo fixture mode."
         )
+
 
 @router.get("/analysis/{analysis_id}", response_model=AnalysisResponse)
 def get_analysis(

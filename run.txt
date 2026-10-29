@@ -1,0 +1,17 @@
+Quick copy-paste version
+
+Terminal 1:
+
+cd "D:\CyberTools\OpenSource Dependency Risk Beyond Known Vulnerabilities"
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH="."
+python -m uvicorn backend.app.main:app --reload --port 8000
+
+
+Terminal 2:
+
+cd "D:\CyberTools\OpenSource Dependency Risk Beyond Known Vulnerabilities"
+.\.venv\Scripts\Activate.ps1
+python -m streamlit run dashboard/app.py
+
+One thing to remember: don't close Terminal 1 while using the dashboard, because Streamlit needs the FastAPI backend.

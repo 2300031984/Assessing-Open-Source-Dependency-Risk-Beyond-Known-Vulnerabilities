@@ -22,24 +22,45 @@ class GitHubCollector(BaseCollector):
 
     @staticmethod
     def parse_github_url(url: str) -> Tuple[str, str]:
-        """Extract owner and repository name from a GitHub URL."""
-        pattern = r"github\.com/([^/]+)/([^/]+?)(?:\.git|/)?$"
-        match = re.search(pattern, url.strip())
+        """
+        Extract owner and repository name from a GitHub URL.
+        Validates structure, strips query parameters and fragments,
+        and ensures valid identifier characters.
+        """
+        if not url or not isinstance(url, str):
+            raise ValueError("Repository URL must be a non-empty string.")
+
+        clean_url = url.strip()
+        if len(clean_url) > 512:
+            raise ValueError("Repository URL exceeds maximum supported length (512 characters).")
+
+        # Strip query parameters and URL fragments
+        clean_url = clean_url.split("?")[0].split("#")[0].rstrip("/")
+
+        pattern = r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?$"
+        match = re.search(pattern, clean_url)
         if not match:
-            raise ValueError(f"Invalid GitHub repository URL: {url}")
+            raise ValueError(f"Invalid GitHub repository URL: {url}. Expected format: https://github.com/owner/repository")
+
         owner = match.group(1)
         repo = match.group(2)
+
+        # Ensure owner and repo don't match reserved route keywords
+        if owner.lower() in ["settings", "explore", "topics", "collections", "trending"]:
+            raise ValueError(f"Invalid GitHub repository URL: '{owner}' is a reserved GitHub route.")
+
         return owner, repo
 
     def collect(self, repository_url: str) -> Dict[str, Any]:
         """Collect all available repository signals from GitHub API."""
         owner, repo = self.parse_github_url(repository_url)
         missing_fields: List[str] = []
+        timeout = settings.API_TIMEOUT_SECONDS
 
         # 1. Base Repository Info
         repo_api_url = f"{self.GITHUB_API_BASE}/repos/{owner}/{repo}"
         try:
-            res = requests.get(repo_api_url, headers=self.headers, timeout=10)
+            res = requests.get(repo_api_url, headers=self.headers, timeout=timeout)
             if res.status_code == 404:
                 raise ValueError(f"GitHub repository not found: {owner}/{repo}")
             elif res.status_code == 403 and "rate limit" in res.text.lower():
@@ -58,6 +79,7 @@ class GitHubCollector(BaseCollector):
             repo_data = {}
 
         if not repo_data:
+
             # Fallback structure with recorded missing fields
             return {
                 "owner": owner,

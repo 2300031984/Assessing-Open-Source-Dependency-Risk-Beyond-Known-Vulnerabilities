@@ -1,6 +1,8 @@
+import re
 import logging
 from typing import Dict, Any, List, Optional
 import requests
+from backend.app.core.config import settings
 from backend.app.collectors.base import BaseCollector
 
 logger = logging.getLogger("cyber100.collectors.osv")
@@ -8,57 +10,103 @@ logger = logging.getLogger("cyber100.collectors.osv")
 class OSVCollector(BaseCollector):
     OSV_API_URL = "https://api.osv.dev/v1/query"
 
-    def collect(self, package_name: str, ecosystem: str = "PyPI") -> List[Dict[str, Any]]:
+    ECOSYSTEM_MAP: Dict[str, str] = {
+        "python": "PyPI",
+        "javascript": "npm",
+        "typescript": "npm",
+        "rust": "crates.io",
+        "go": "Go",
+        "ruby": "RubyGems",
+        "java": "Maven",
+        "kotlin": "Maven",
+        "scala": "Maven",
+        "php": "Packagist",
+        "c#": "NuGet",
+        "c++": "Conan",
+        "c": "Conan"
+    }
+
+    @classmethod
+    def map_language_to_ecosystem(cls, language: Optional[str]) -> str:
+        """Map repository primary language to the standard OSV package ecosystem."""
+        if not language:
+            return "PyPI"
+        return cls.ECOSYSTEM_MAP.get(language.strip().lower(), "PyPI")
+
+    def collect(self, package_name: str, ecosystem: Optional[str] = "PyPI") -> List[Dict[str, Any]]:
         """
         Query OSV API for known vulnerability signals for a package name and ecosystem.
-        Returns a list of parsed vulnerability signals.
+        Returns a list of parsed, deduplicated vulnerability signals.
         """
-        payload = {
+        if not package_name or not package_name.strip():
+            logger.warning("Empty package name provided to OSVCollector; skipping query.")
+            return []
+
+        payload: Dict[str, Any] = {
             "package": {
-                "name": package_name,
-                "ecosystem": ecosystem
+                "name": package_name.strip()
             }
         }
+        if ecosystem:
+            payload["package"]["ecosystem"] = ecosystem
+
         vulnerability_signals: List[Dict[str, Any]] = []
+        seen_vuln_ids = set()
+        timeout = settings.API_TIMEOUT_SECONDS
 
         try:
-            res = requests.post(self.OSV_API_URL, json=payload, timeout=8)
+            res = requests.post(self.OSV_API_URL, json=payload, timeout=timeout)
             if res.status_code == 200:
                 data = res.json()
                 vulns = data.get("vulns", [])
                 for v in vulns:
                     vuln_id = v.get("id", "UNKNOWN-VULN")
+                    if vuln_id in seen_vuln_ids:
+                        continue
+                    seen_vuln_ids.add(vuln_id)
+
                     summary = v.get("summary") or v.get("details", "No summary provided.")
                     
                     # Extract severity / CVSS if present
                     cvss_score = 0.0
                     severity_label = "UNKNOWN"
                     severities = v.get("severity", [])
-                    for s in severities:
-                        if s.get("type") == "CVSS_V3":
-                            cvss_score = self._parse_cvss_score(s.get("score"))
-                            severity_label = self._cvss_to_label(cvss_score)
-                            break
+                    if isinstance(severities, list):
+                        for s in severities:
+                            if isinstance(s, dict) and s.get("type") in ["CVSS_V3", "CVSS_V4", "CVSS_V2"]:
+                                cvss_score = self._parse_cvss_score(s.get("score"))
+                                severity_label = self._cvss_to_label(cvss_score)
+                                break
                     
                     # Extract affected & fixed versions
                     affected_list = []
                     fixed_list = []
-                    for affected in v.get("affected", []):
-                        pkg_ranges = affected.get("ranges", [])
-                        for r in pkg_ranges:
-                            for event in r.get("events", []):
-                                if "introduced" in event:
-                                    affected_list.append(f">={event['introduced']}")
-                                if "fixed" in event:
-                                    fixed_list.append(event['fixed'])
+                    affected_entries = v.get("affected", [])
+                    if isinstance(affected_entries, list):
+                        for affected in affected_entries:
+                            if isinstance(affected, dict):
+                                pkg_ranges = affected.get("ranges", [])
+                                if isinstance(pkg_ranges, list):
+                                    for r in pkg_ranges:
+                                        if isinstance(r, dict):
+                                            for event in r.get("events", []):
+                                                if isinstance(event, dict):
+                                                    if "introduced" in event:
+                                                        affected_list.append(f">={event['introduced']}")
+                                                    if "fixed" in event:
+                                                        fixed_list.append(event['fixed'])
                     
+                    # Deduplicate version strings
+                    affected_str = ", ".join(dict.fromkeys(affected_list)) if affected_list else "All versions"
+                    fixed_str = ", ".join(dict.fromkeys(fixed_list)) if fixed_list else "None available"
+
                     vulnerability_signals.append({
                         "vuln_id": vuln_id,
                         "severity": severity_label,
-                        "cvss_score": cvss_score,
-                        "summary": summary[:250], # store clean summary snippet
-                        "affected_versions": ", ".join(affected_list) if affected_list else "All versions",
-                        "fixed_versions": ", ".join(fixed_list) if fixed_list else "None available",
+                        "cvss_score": round(cvss_score, 1),
+                        "summary": str(summary)[:250], # clean summary snippet
+                        "affected_versions": affected_str,
+                        "fixed_versions": fixed_str,
                         "published_date": v.get("published"),
                         "modified_date": v.get("modified"),
                         "source": "OSV Known Vulnerability Signal"
@@ -73,17 +121,26 @@ class OSVCollector(BaseCollector):
         return vulnerability_signals
 
     @staticmethod
-    def _parse_cvss_score(cvss_str: Optional[str]) -> float:
-        if not cvss_str:
+    def _parse_cvss_score(cvss_val: Any) -> float:
+        if cvss_val is None:
             return 0.0
-        # If it's a number string
-        try:
-            return float(cvss_str)
-        except ValueError:
-            pass
-        # If CVSS vector string like CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
-        # Parse vector if metric score not directly provided
-        return 5.0 # Reasonable fallback mid-range score if unparsed vector
+        if isinstance(cvss_val, (int, float)):
+            return float(cvss_val)
+        if isinstance(cvss_val, str):
+            try:
+                return float(cvss_val)
+            except ValueError:
+                # Strip CVSS version prefix (e.g. CVSS:3.1/ or CVSS:3.0/) so the version is not mistaken for the score
+                cleaned = re.sub(r"^CVSS:\d+\.\d+/?", "", cvss_val.strip(), flags=re.IGNORECASE)
+                vector_match = re.search(r"\b(\d+\.\d+)\b", cleaned)
+                if vector_match:
+                    try:
+                        return float(vector_match.group(1))
+                    except ValueError:
+                        pass
+                return 5.0 # Reasonable fallback mid-range score if unparsed vector
+        return 0.0
+
 
     @staticmethod
     def _cvss_to_label(score: float) -> str:
@@ -96,3 +153,4 @@ class OSVCollector(BaseCollector):
         elif score > 0.0:
             return "LOW"
         return "UNKNOWN"
+
